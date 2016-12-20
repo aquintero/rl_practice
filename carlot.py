@@ -35,14 +35,8 @@ class Environment:
         }
         
         self._rental_reward = 100
-        self._invalid_state_reward = -100000
         
-        def sample(action):  
-            max_action = min(self._internal_state['lot2']['cars'], self._internal_state['lot1']['max'] - self._internal_state['lot1']['cars'])
-            min_action = -min(self._internal_state['lot1']['cars'], self._internal_state['lot2']['max'] - self._internal_state['lot2']['cars'])
-
-            invalid = action < min_action or action > max_action
-            action = min(max_action, max(min_action, action))
+        def sample(action):
             
             self._internal_state['lot1']['cars'] += action
             self._internal_state['lot2']['cars'] -= action
@@ -58,27 +52,32 @@ class Environment:
                 }
             }
             
+            
+            if sample_day['lot1']['rentals'] < 0:
+                print(self._internal_state['lot1']['cars'])
+            
             self._internal_state['lot1']['cars'] += sample_day['lot1']['returns'] - sample_day['lot1']['rentals']
             self._internal_state['lot2']['cars'] += sample_day['lot2']['returns'] - sample_day['lot2']['rentals']
             
             reward = self._rental_reward * (sample_day['lot1']['rentals'] + sample_day['lot2']['rentals'])
-            if invalid:
-                reward = self._invalid_state_reward
             next_state = (self._internal_state['lot1']['cars'], self._internal_state['lot2']['cars'])
             
             return reward, next_state
         
         start_state = (self._internal_state['lot1']['max'], self._internal_state['lot2']['max'])
-        self.agent = Agent(start_state, 0.9, sample)
+        self.agent = Agent(self._internal_state, start_state, 0.9, 0.9, sample)
         
 class Agent:
-    def __init__(self, state, discount, sample):
-        self.state = state
+    def __init__(self, env_info, start_state, discount, td_lambda, sample):
+        self.env_info = env_info
+        self.state = start_state
         self.discount = discount
+        self.td_lambda = td_lambda
         self.sample = sample
         
         self.time_step = 1
         self.Q = {}
+        self.elibility = {}
     
     def _learning_rate(self):
         return 1 / np.sqrt(self.time_step)
@@ -89,7 +88,10 @@ class Agent:
     def policy(self, state):
         best_action = None
         best_action_value = None
-        for action in range(-5, 6):
+        max_action = min(state[1], self.env_info['lot1']['max'] - state[0])
+        min_action = -min(state[0], self.env_info['lot2']['max'] - state[1])
+        
+        for action in range(min_action, max_action + 1):
             state_action = (state, action)
             if not state_action in self.Q:
                 self.Q[state_action] = 0
@@ -106,20 +108,29 @@ class Agent:
     def act(self):
         action = None
         if np.random.rand() < self._epsilon(): #p(epsilon) random action
-            action = np.random.randint(-5, 6)
+            max_action = min(self.state[1], self.env_info['lot1']['max'] - self.state[0])
+            min_action = -min(self.state[0], self.env_info['lot2']['max'] - self.state[1])
+            action = np.random.randint(min_action, max_action + 1)
         else:   #p(1 - epsilon) greedy w.r.t. Q
             action = self.policy(self.state)
-        
-        reward, next_state = self.sample(action)
-        next_action = self.policy(next_state)
-        
         state_action = (self.state, action)
         if not state_action in self.Q:
             self.Q[state_action] = 0
+        if not state_action in self.elibility:
+            self.elibility[state_action] = 0
+        
+        reward, next_state = self.sample(action)
+        next_action = self.policy(next_state)
         next_state_action = (next_state, next_action)
-        self.Q[state_action] += self._learning_rate() * (reward + self.discount * self.Q[next_state_action] - self.Q[state_action])
-            
-            
+        
+        delta = reward + self.discount * self.Q[next_state_action] - self.Q[state_action]
+        if reward < 0:
+            print(state_action, reward)
+        self.elibility[state_action] += 1
+        
+        for sa in self.elibility:
+            self.Q[sa] += self._learning_rate() * delta * self.elibility[sa]
+            self.elibility[sa] *= self.discount * self.td_lambda
         #print(state_action, reward, next_state_action)
         self.state = next_state
         self.time_step += 1
@@ -133,9 +144,9 @@ def main():
     max1 = 10
     max2 = 10
     env = Environment(lot1_max = max1, lot2_max = max2)
-    for i in range(10000000):
+    for i in range(100000):
         env.agent.act()
-    
+        
     x = range(max1 + 1)
     y = range(max2 + 1)
     
