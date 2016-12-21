@@ -16,10 +16,11 @@ import numpy as np
 from numpy.random import poisson
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+from collections import deque
 
 class Environment:
     def __init__(self, lot1_max = 10, lot2_max = 10, lot1_return_rate = 3, lot1_rental_rate = 3, lot2_return_rate = 2, lot2_rental_rate = 4):
-        self._internal_state = {
+        self.info = {
             'lot1': {
                 'max': lot1_max,
                 'cars': lot1_max, 
@@ -36,62 +37,62 @@ class Environment:
         
         self._rental_reward = 100
         
-        def sample(action):
-            
-            self._internal_state['lot1']['cars'] += action
-            self._internal_state['lot2']['cars'] -= action
-            
-            sample_day = {
-                'lot1': {
-                    'rentals': min(poisson(self._internal_state['lot1']['rental_rate']), self._internal_state['lot1']['cars']),
-                    'returns': min(poisson(self._internal_state['lot1']['return_rate']), self._internal_state['lot1']['max'] - self._internal_state['lot1']['cars'])
-                },
-                'lot2': {
-                    'rentals': min(poisson(self._internal_state['lot2']['rental_rate']), self._internal_state['lot2']['cars']),
-                    'returns': min(poisson(self._internal_state['lot2']['return_rate']), self._internal_state['lot2']['max'] - self._internal_state['lot2']['cars'])
-                }
-            }
-            
-            
-            if sample_day['lot1']['rentals'] < 0:
-                print(self._internal_state['lot1']['cars'])
-            
-            self._internal_state['lot1']['cars'] += sample_day['lot1']['returns'] - sample_day['lot1']['rentals']
-            self._internal_state['lot2']['cars'] += sample_day['lot2']['returns'] - sample_day['lot2']['rentals']
-            
-            reward = self._rental_reward * (sample_day['lot1']['rentals'] + sample_day['lot2']['rentals'])
-            next_state = (self._internal_state['lot1']['cars'], self._internal_state['lot2']['cars'])
-            
-            return reward, next_state
+    def state(self):
+        return (self.info['lot1']['cars'], self.info['lot2']['cars'])
         
-        start_state = (self._internal_state['lot1']['max'], self._internal_state['lot2']['max'])
-        self.agent = Agent(self._internal_state, start_state, 0.9, 0.9, sample)
+    def actions(self, state):
+        max_action = min(state[1], self.info['lot1']['max'] - state[0])
+        min_action = -min(state[0], self.info['lot2']['max'] - state[1])
+        return range(min_action, max_action + 1)
+        
+    def sample(self, action):
+        
+        self.info['lot1']['cars'] += action
+        self.info['lot2']['cars'] -= action
+        
+        sample_day = {
+            'lot1': {
+                'rentals': min(poisson(self.info['lot1']['rental_rate']), self.info['lot1']['cars']),
+                'returns': min(poisson(self.info['lot1']['return_rate']), self.info['lot1']['max'] - self.info['lot1']['cars'])
+            },
+            'lot2': {
+                'rentals': min(poisson(self.info['lot2']['rental_rate']), self.info['lot2']['cars']),
+                'returns': min(poisson(self.info['lot2']['return_rate']), self.info['lot2']['max'] - self.info['lot2']['cars'])
+            }
+        }
+        
+        
+        if sample_day['lot1']['rentals'] < 0:
+            print(self.info['lot1']['cars'])
+        
+        self.info['lot1']['cars'] += sample_day['lot1']['returns'] - sample_day['lot1']['rentals']
+        self.info['lot2']['cars'] += sample_day['lot2']['returns'] - sample_day['lot2']['rentals']
+        
+        reward = self._rental_reward * (sample_day['lot1']['rentals'] + sample_day['lot2']['rentals'])
+        
+        return reward
         
 class Agent:
-    def __init__(self, env_info, start_state, discount, td_lambda, sample):
-        self.env_info = env_info
-        self.state = start_state
+    def __init__(self, discount = 0.95, td_lambda = 0.8, learning_rate = 0.1, epsilon = 0.1, trace_threshold = 0.001):
         self.discount = discount
         self.td_lambda = td_lambda
-        self.sample = sample
+        self.learning_rate = learning_rate
+        self.epsilon = epsilon
         
-        self.time_step = 1
         self.Q = {}
-        self.elibility = {}
-    
-    def _learning_rate(self):
-        return 1 / np.sqrt(self.time_step)
-    
-    def _epsilon(self):
-        return 1 / np.sqrt(self.time_step)
+        self.history = deque(maxlen = 1 + int(-np.log(1 / trace_threshold) / np.log(self.discount * self.td_lambda + 0.00001)))
+        
+    def set_environment(self, env):
+        self.env = env
+        self.history.clear()
+        self.time_step = 1
+        self.state = self.env.state()
     
     def policy(self, state):
         best_action = None
         best_action_value = None
-        max_action = min(state[1], self.env_info['lot1']['max'] - state[0])
-        min_action = -min(state[0], self.env_info['lot2']['max'] - state[1])
         
-        for action in range(min_action, max_action + 1):
+        for action in self.env.actions(state):
             state_action = (state, action)
             if not state_action in self.Q:
                 self.Q[state_action] = 0
@@ -105,34 +106,32 @@ class Agent:
                 
         return best_action
     
-    def act(self):
+    def epsilon_policy(self, state):
         action = None
-        if np.random.rand() < self._epsilon(): #p(epsilon) random action
-            max_action = min(self.state[1], self.env_info['lot1']['max'] - self.state[0])
-            min_action = -min(self.state[0], self.env_info['lot2']['max'] - self.state[1])
-            action = np.random.randint(min_action, max_action + 1)
+        if np.random.rand() < self.epsilon: #p(epsilon) random action
+            action = np.random.choice(self.env.actions(state))
         else:   #p(1 - epsilon) greedy w.r.t. Q
-            action = self.policy(self.state)
-        state_action = (self.state, action)
+            action = self.policy(state)
+            
+        return action
+    
+    def act(self):
+        action = self.epsilon_policy(self.env.state())
+        state_action = (self.env.state(), action)
         if not state_action in self.Q:
             self.Q[state_action] = 0
-        if not state_action in self.elibility:
-            self.elibility[state_action] = 0
+        self.history.append(state_action)
         
-        reward, next_state = self.sample(action)
-        next_action = self.policy(next_state)
-        next_state_action = (next_state, next_action)
+        reward = self.env.sample(action)
+        next_action = self.policy(self.env.state())
+        next_state_action = (self.env.state(), next_action)
         
-        delta = reward + self.discount * self.Q[next_state_action] - self.Q[state_action]
-        if reward < 0:
-            print(state_action, reward)
-        self.elibility[state_action] += 1
-        
-        for sa in self.elibility:
-            self.Q[sa] += self._learning_rate() * delta * self.elibility[sa]
-            self.elibility[sa] *= self.discount * self.td_lambda
-        #print(state_action, reward, next_state_action)
-        self.state = next_state
+        eligibility = 1
+        for sa in self.history:
+            delta = reward + self.discount * self.Q[next_state_action] - self.Q[sa]
+            self.Q[sa] += self.learning_rate * delta * eligibility
+            eligibility *= self.discount * self.td_lambda
+            
         self.time_step += 1
         
     def value(self, state):
@@ -143,23 +142,28 @@ def main():
     np.random.seed(0)
     max1 = 10
     max2 = 10
-    env = Environment(lot1_max = max1, lot2_max = max2)
-    for i in range(100000):
-        env.agent.act()
+    agent = Agent(discount = 0.95, td_lambda = 0.9)
+    for episode in range(50):
+        env = Environment(lot1_max = max1, lot2_max = max2)
+        agent.set_environment(env)
+        agent.epsilon = 0.5
+        agent.learning_rate = 1 / (2 * episode + 1)
+        for step in range(200):
+            agent.act()
         
-    x = range(max1 + 1)
-    y = range(max2 + 1)
+    x = range(max1 - 1)
+    y = range(max2 - 1)
     
-    value = np.zeros((max1 + 1, max2 + 1))
-    policy = np.zeros((max1 + 1, max2 + 1))
+    value = np.zeros((max1 - 1, max2 - 1))
+    policy = np.zeros((max1 - 1, max2 - 1))
     for i in x:
         for j in y:
-            value[i][j] = env.agent.value((i, j))
-            policy[i][j] = env.agent.policy((i, j))
+            value[i][j] = agent.value((i, j))
+            policy[i][j] = agent.policy((i, j))
             
     x, y = np.meshgrid(x, y)
             
-    fig = plt.figure(figsize=plt.figaspect(0.5))
+    fig = plt.figure(figsize = plt.figaspect(0.5))
     ax1 = fig.add_subplot(1, 2, 1, projection = '3d')
     ax2 = fig.add_subplot(1, 2, 2, projection = '3d')
     
