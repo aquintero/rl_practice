@@ -73,13 +73,14 @@ class Environment:
         return reward
         
 class Agent:
-    def __init__(self, discount = 0.95, td_lambda = 0.8, learning_rate = 0.1, epsilon = 0.1, trace_threshold = 0.001):
+    def __init__(self, discount = 0.95, td_lambda = 0.0, learning_rate = 0.1, epsilon = 0.5, trace_threshold = 0.001):
         self.discount = discount
         self.td_lambda = td_lambda
         self.learning_rate = learning_rate
         self.epsilon = epsilon
         
         self.Q = {}
+        self.E = {}
         self.history = deque(maxlen = 1 + int(-np.log(1 / trace_threshold) / np.log(self.discount * self.td_lambda + 0.00001)))
         
     def set_environment(self, env):
@@ -120,17 +121,23 @@ class Agent:
         state_action = (self.env.state(), action)
         if not state_action in self.Q:
             self.Q[state_action] = 0
-        self.history.append(state_action)
+        if not state_action in self.E:
+            self.E[state_action] = 0
+        #self.history.appendleft([state_action, 1])
         
         reward = self.env.sample(action)
-        next_action = self.policy(self.env.state())
+        next_action = self.epsilon_policy(self.env.state())
         next_state_action = (self.env.state(), next_action)
+        if not next_state_action in self.Q:
+            self.Q[next_state_action] = 0
         
-        eligibility = 1
-        for sa in self.history:
-            delta = reward + self.discount * self.Q[next_state_action] - self.Q[sa]
-            self.Q[sa] += self.learning_rate * delta * eligibility
-            eligibility *= self.discount * self.td_lambda
+        delta = reward + self.discount * self.Q[next_state_action] - self.Q[state_action]
+        self.E[state_action] += 1
+        
+        for sa in self.E:
+            #delta = reward + self.discount * self.Q[next_state_action] - self.Q[sa]
+            self.Q[sa] += self.learning_rate * delta * self.E[sa]
+            self.E[sa] *= self.discount * self.td_lambda
             
         self.time_step += 1
         
@@ -146,9 +153,9 @@ def main():
     for episode in range(50):
         env = Environment(lot1_max = max1, lot2_max = max2)
         agent.set_environment(env)
-        agent.epsilon = 0.5
+        agent.epsilon = 0.1
         agent.learning_rate = 1 / (2 * episode + 1)
-        for step in range(200):
+        for step in range(100):
             agent.act()
         
     x = range(max1 - 1)
